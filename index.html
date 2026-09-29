@@ -1,4 +1,4 @@
-<!doctype html>  
+ <!doctype html>  
 <html lang="de">  
 <head>  
   <meta charset="utf-8">  
@@ -669,7 +669,7 @@
           last: "Hoffmann",  
           area: "Elektriker",  
           team: "Team 2",  
-          nightEligible: true,  
+          nightEligible: false,  
           active: true  
         },  
         {  
@@ -783,25 +783,35 @@
     return "";  
   }  
   
+  /*  
+    Prüft ob ein Mitarbeiter am übergebenen Datum in der Nachtschicht ist.  
+    Die Nachtwoche geht von Sonntag 22:00 bis Samstag 06:00 (also 6 Schichten: So, Mo, Di, Mi, Do, Fr).  
+  */  
   function nightAssignmentFor(employeeId, date) {  
+    let targetMonday;  
+    const day = date.getDay();  
+  
+    if (day === 0) {  
+      // Sonntag gehört zur Nachtwoche der kommenden Woche  
+      targetMonday = addDays(date, 1);  
+    } else if (day >= 1 && day <= 5) {  
+      // Montag bis Freitag gehören zur aktuellen Woche  
+      targetMonday = mondayOf(date);  
+    } else {  
+      // Samstag beginnt keine neue Nachtschicht  
+      return false;  
+    }  
+  
+    const weekKey = iso(targetMonday);  
     const nightWeeks = load("nightWeeks", {});  
-    const weekKey = iso(mondayOf(date));  
     const assignment = nightWeeks[weekKey];  
   
     if (!assignment) return false;  
   
-    const sunday = sundayOf(date);  
-    const validShiftStartDays = [];  
-  
-    for (let i = 0; i < 6; i++) {  
-      validShiftStartDays.push(iso(addDays(sunday, i)));  
-    }  
-  
-    return validShiftStartDays.includes(iso(date)) &&  
-      (  
-        assignment.schlosser === employeeId ||  
-        assignment.elektriker === employeeId  
-      );  
+    return (  
+      assignment.schlosser === employeeId ||  
+      assignment.elektriker === employeeId  
+    );  
   }  
   
   function hasReadiness(employeeId, date) {  
