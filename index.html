@@ -1,4 +1,4 @@
- <!doctype html>  
+<!doctype html>  
 <html lang="de">  
 <head>  
   <meta charset="utf-8">  
@@ -229,7 +229,7 @@
     .N { background: var(--purple); }  
     .R { background: var(--green); }  
     .U { background: var(--red); }  
-    .K { background: #991b1b; }  
+    .A { background: #991b1b; } /* Geändert von .K zu .A */  
     .SCH { background: var(--dark-red); }  
   
     #login {  
@@ -343,7 +343,7 @@
   
           <button class="primary" onclick="renderPlan()">Anzeigen</button>  
           <button onclick="window.print()">Drucken / PDF</button>  
-          <button onclick="exportCSV()">CSV Export</button>  
+          <button id="btnExportCSV" onclick="exportCSV()">CSV Export</button>  
         </div>  
   
         <div class="notice">  
@@ -353,7 +353,7 @@
           <span class="badge N" style="color:white">N Nacht</span>  
           <span class="badge R" style="color:white">R Bereitschaft</span>  
           <span class="badge U" style="color:white">U Urlaub</span>  
-          <span class="badge K" style="color:white">K Krank</span>  
+          <span class="badge A" style="color:white">A Abwesend</span>  
           <span class="badge SCH" style="color:white">Sch Schulung</span>  
         </div>  
   
@@ -685,7 +685,21 @@
       ]);  
     }  
   
-    if (!localStorage.getItem("manualShifts")) save("manualShifts", {});  
+    if (!localStorage.getItem("manualShifts")) {  
+      save("manualShifts", {});  
+    } else {  
+      // Migration: Falls noch "K" gespeichert ist, in "A" umwandeln  
+      const manualShifts = load("manualShifts", {});  
+      let changed = false;  
+      for (const key in manualShifts) {  
+        if (manualShifts[key] === "K") {  
+          manualShifts[key] = "A";  
+          changed = true;  
+        }  
+      }  
+      if (changed) save("manualShifts", manualShifts);  
+    }  
+  
     if (!localStorage.getItem("nightWeeks")) save("nightWeeks", {});  
     if (!localStorage.getItem("readiness")) save("readiness", {});  
     if (!localStorage.getItem("vacations")) save("vacations", []);  
@@ -716,6 +730,12 @@
     document.querySelectorAll(".adminOnly").forEach(element => {  
       element.classList.toggle("hidden", !isAdmin());  
     });  
+  
+    // CSV Export Button für LESER ausblenden  
+    const btnExport = document.getElementById("btnExportCSV");  
+    if (btnExport) {  
+      btnExport.classList.toggle("hidden", currentUser.role === "LESER");  
+    }  
   
     const today = new Date();  
   
@@ -757,11 +777,8 @@
     if (name === "benutzer") renderUsers();  
   }  
   
-  function automaticTeamShift(employee, date) {  
-    if (isWeekend(date)) return "";  
-    if (employee.area === "Gebäude") return "";  
-    if (!employee.team) return "";  
-  
+  // Gibt zurück, welches Team in der übergebenen Woche Spätschicht hat  
+  function getLateShiftTeamForWeek(date) {  
     const startDate = parseDate(ROTATION_START);  
     const currentMonday = mondayOf(date);  
   
@@ -770,35 +787,35 @@
       (7 * 24 * 60 * 60 * 1000)  
     );  
   
+    // Bei Woche 0 (Start): Team 1 hat Spät, Team 2 hat Früh  
     const startPattern = Math.abs(weekDifference) % 2 === 0;  
-  
-    if (employee.team === "Team 1") {  
-      return startPattern ? "S" : "F";  
-    }  
-  
-    if (employee.team === "Team 2") {  
-      return startPattern ? "F" : "S";  
-    }  
-  
-    return "";  
+    return startPattern ? "Team 1" : "Team 2";  
+  }  
+    
+  // Gibt zurück, welches Team in der übergebenen Woche Frühschicht hat  
+  function getEarlyShiftTeamForWeek(date) {  
+    const lateShiftTeam = getLateShiftTeamForWeek(date);  
+    return lateShiftTeam === "Team 1" ? "Team 2" : "Team 1";  
   }  
   
-  /*  
-    Prüft ob ein Mitarbeiter am übergebenen Datum in der Nachtschicht ist.  
-    Die Nachtwoche geht von Sonntag 22:00 bis Samstag 06:00 (also 6 Schichten: So, Mo, Di, Mi, Do, Fr).  
-  */  
+  function automaticTeamShift(employee, date) {  
+    if (isWeekend(date)) return "";  
+    if (employee.area === "Gebäude") return "";  
+    if (!employee.team) return "";  
+  
+    const lateShiftTeam = getLateShiftTeamForWeek(date);  
+    return employee.team === lateShiftTeam ? "S" : "F";  
+  }  
+  
   function nightAssignmentFor(employeeId, date) {  
     let targetMonday;  
     const day = date.getDay();  
   
     if (day === 0) {  
-      // Sonntag gehört zur Nachtwoche der kommenden Woche  
       targetMonday = addDays(date, 1);  
     } else if (day >= 1 && day <= 5) {  
-      // Montag bis Freitag gehören zur aktuellen Woche  
       targetMonday = mondayOf(date);  
     } else {  
-      // Samstag beginnt keine neue Nachtschicht  
       return false;  
     }  
   
@@ -821,7 +838,6 @@
   
   function isOnVacation(employeeId, date) {  
     const dateIso = iso(date);  
-  
     return load("vacations", []).some(vacation =>  
       vacation.employeeId === employeeId &&  
       dateIso >= vacation.from &&  
@@ -900,7 +916,6 @@
   
     Object.entries(readiness).forEach(([key, active]) => {  
       if (!active) return;  
-  
       const [storedEmployeeId, dateIso] = key.split("_");  
       if (storedEmployeeId !== employeeId) return;  
   
@@ -994,22 +1009,32 @@
     return holidays.find(holiday => dateIso >= holiday.from && dateIso <= holiday.to)?.name || "";  
   }  
   
+  /*   
+    Ermittelt die anzuzeigende Schicht für einen Tag.  
+    Die Priorität (Reihenfolge) ist absolut entscheidend, damit   
+    manuelle Änderungen (Krank, Urlaub etc.) die Automatik überschreiben.  
+  */  
   function getDisplayShift(employee, date) {  
     const dateIso = iso(date);  
     const manualShifts = load("manualShifts", {});  
     const manualShift = manualShifts[`${employee.id}_${dateIso}`] || "";  
   
-    if (isWeekend(date)) {  
-      if (nightAssignmentFor(employee.id, date)) return "N";  
-      if (manualShift === "N") return "N";  
-      if (hasReadiness(employee.id, date)) return "R";  
-      return "";  
-    }  
-  
+    // 1. Urlaub aus dem Urlaubsmodul hat höchste Priorität  
     if (isOnVacation(employee.id, date)) return "U";  
-    if (nightAssignmentFor(employee.id, date)) return "N";  
+  
+    // 2. Manuelle tägliche Überschreibung (A, SCH, U, F, S, N)  
     if (manualShift) return manualShift;  
   
+    // 3. Automatische Nachtwoche  
+    if (nightAssignmentFor(employee.id, date)) return "N";  
+  
+    // 4. Wochenende (wenn nicht manuell überschrieben oder Nachtschicht)  
+    if (isWeekend(date)) {  
+      if (hasReadiness(employee.id, date)) return "R";  
+      return ""; // Bleibt am Wochenende leer  
+    }  
+  
+    // 5. Automatische Teamrotation für normale Werktage  
     return automaticTeamShift(employee, date);  
   }  
   
@@ -1109,15 +1134,8 @@
   
         html += `<td class="${classes}">`;  
   
-        if (isWeekend(date)) {  
-          if (shift) {  
-            html += `<span class="shift ${shift}">${shift}</span>`;  
-          }  
-          html += "</td>";  
-          continue;  
-        }  
-  
-        if (canWrite() && !vacation && !automaticNight) {  
+        // Wenn Planer angemeldet ist und kein fester Urlaub aus der Verwaltung vorliegt  
+        if (canWrite() && !vacation) {  
           html += `  
             <select onchange="saveManualShift('${employee.id}', '${dateIso}', this.value)">  
               <option value="">Automatisch</option>  
@@ -1125,7 +1143,7 @@
               <option value="S" ${manualShift === "S" ? "selected" : ""}>S Spätschicht</option>  
               <option value="N" ${manualShift === "N" ? "selected" : ""}>N Nachtschicht</option>  
               <option value="U" ${manualShift === "U" ? "selected" : ""}>U Urlaub</option>  
-              <option value="K" ${manualShift === "K" ? "selected" : ""}>K Krank</option>  
+              <option value="A" ${manualShift === "A" ? "selected" : ""}>A Abwesend</option>  
               <option value="SCH" ${manualShift === "SCH" ? "selected" : ""}>Sch Schulung</option>  
             </select>  
           `;  
@@ -1134,6 +1152,7 @@
             html += `<span class="shift ${shift}">${label}</span>`;  
           }  
         } else {  
+          // Nur lesen oder feste Urlaubsansicht  
           if (shift) {  
             const label = shift === "SCH" ? "Sch" : shift;  
             html += `<span class="shift ${shift}">${label}</span>`;  
@@ -1179,16 +1198,17 @@
         renderPlan();  
         return;  
       }  
+        
+      const lateShiftTeam = getLateShiftTeamForWeek(date);  
+      if (employee.team !== lateShiftTeam) {  
+        alert(`Nachtschicht darf nur an Mitarbeiter aus dem aktuellen Spätschicht-Team (${lateShiftTeam}) vergeben werden.`);  
+        renderPlan();  
+        return;  
+      }  
     }  
   
     if (isOnVacation(employeeId, date) && value !== "") {  
       alert("Dieser Mitarbeiter hat Jahresurlaub. Änderungen bitte über die Urlaubsverwaltung vornehmen.");  
-      renderPlan();  
-      return;  
-    }  
-  
-    if (nightAssignmentFor(employeeId, date) && value !== "") {  
-      alert("Dieser Mitarbeiter ist bereits in einer automatischen Nachtwoche eingeplant.");  
       renderPlan();  
       return;  
     }  
@@ -1219,15 +1239,18 @@
     const assignment = nightWeeks[weekKey] || { schlosser: "", elektriker: "" };  
   
     const employees = getEmployees();  
+    const lateShiftTeam = getLateShiftTeamForWeek(monday);  
   
     const schlosser = employees.filter(employee =>  
       employee.area === "Schlosser" &&  
+      employee.team === lateShiftTeam &&  
       employee.nightEligible !== false &&  
       !isBlockedForNightWeek(employee.id, sunday)  
     );  
   
     const elektriker = employees.filter(employee =>  
       employee.area === "Elektriker" &&  
+      employee.team === lateShiftTeam &&  
       employee.nightEligible !== false &&  
       !isBlockedForNightWeek(employee.id, sunday)  
     );  
@@ -1238,6 +1261,7 @@
   
         <p class="small">  
           Nachtwoche: Sonntag 22:00 Uhr bis Samstag 06:00 Uhr.<br>  
+          Die Nachtschicht wird aus dem Team besetzt, das in dieser Woche Spätschicht hat <strong>(${lateShiftTeam})</strong>.<br>  
           Bei der automatischen Auswahl werden Urlaub (inkl. Tag davor/danach)   
           sowie Bereitschaft am vorherigen Wochenende berücksichtigt.  
         </p>  
@@ -1291,17 +1315,20 @@
   
     const monday = parseDate(weekKey);  
     const sunday = addDays(monday, -1);  
+    const lateShiftTeam = getLateShiftTeamForWeek(monday);  
   
     const employees = getEmployees();  
   
     const schlosserCandidates = employees.filter(employee =>  
       employee.area === "Schlosser" &&  
+      employee.team === lateShiftTeam &&  
       employee.nightEligible !== false &&  
       !isBlockedForNightWeek(employee.id, sunday)  
     );  
   
     const elektrikerCandidates = employees.filter(employee =>  
       employee.area === "Elektriker" &&  
+      employee.team === lateShiftTeam &&  
       employee.nightEligible !== false &&  
       !isBlockedForNightWeek(employee.id, sunday)  
     );  
@@ -1310,12 +1337,12 @@
     const elektriker = chooseMostFairEmployee(elektrikerCandidates, countNightAssignments);  
   
     if (!schlosser) {  
-      alert("Kein geeigneter Schlosser für die Nachtwoche verfügbar.");  
+      alert(`Kein geeigneter Schlosser aus ${lateShiftTeam} für die Nachtwoche verfügbar.`);  
       return;  
     }  
   
     if (!elektriker) {  
-      alert("Kein geeigneter Elektriker für die Nachtwoche verfügbar.");  
+      alert(`Kein geeigneter Elektriker aus ${lateShiftTeam} für die Nachtwoche verfügbar.`);  
       return;  
     }  
   
@@ -1338,6 +1365,15 @@
   
     const monday = parseDate(weekKey);  
     const sunday = addDays(monday, -1);  
+    const lateShiftTeam = getLateShiftTeamForWeek(monday);  
+  
+    const schlosserEmp = getEmployees().find(e => e.id === schlosserId);  
+    const elektrikerEmp = getEmployees().find(e => e.id === elektrikerId);  
+  
+    if (schlosserEmp.team !== lateShiftTeam || elektrikerEmp.team !== lateShiftTeam) {  
+      alert(`Die ausgewählten Mitarbeiter müssen im aktuellen Spätschicht-Team (${lateShiftTeam}) sein.`);  
+      return;  
+    }  
   
     if (  
       isBlockedForNightWeek(schlosserId, sunday) ||  
@@ -1377,6 +1413,7 @@
   
     const readiness = load("readiness", {});  
     const employees = getEmployees();  
+    const earlyShiftTeam = getEarlyShiftTeamForWeek(saturday);  
   
     let html = `  
       <div class="notice">  
@@ -1388,6 +1425,7 @@
     ["Schlosser", "Elektriker"].forEach(area => {  
       const possibleEmployees = employees.filter(employee =>  
         employee.area === area &&  
+        employee.team === earlyShiftTeam &&  
         !isBlockedForReadiness(employee.id, saturday)  
       );  
   
@@ -1401,8 +1439,9 @@
           <h3>${area}</h3>  
   
           <p class="small">  
-            Mitarbeiter mit Urlaub, vor/nach Urlaub oder mit anschließender Nachtwoche  
-            werden nicht automatisch berücksichtigt.  
+            Die Bereitschaft wird aus dem Team besetzt, das in dieser Woche Frühschicht hat <strong>(${earlyShiftTeam})</strong>.<br>  
+            Mitarbeiter mit Urlaub (inkl. Wochenende davor/danach) oder mit anschließender Nachtwoche  
+            werden nicht berücksichtigt.  
           </p>  
   
           <label>Bereitschaft  
@@ -1442,16 +1481,18 @@
   function autoPlanReadiness(area, saturdayIso, sundayIso) {  
     if (!canWrite()) return;  
     const saturday = parseDate(saturdayIso);  
+    const earlyShiftTeam = getEarlyShiftTeamForWeek(saturday);  
   
     const candidates = getEmployees().filter(employee =>  
       employee.area === area &&  
+      employee.team === earlyShiftTeam &&  
       !isBlockedForReadiness(employee.id, saturday)  
     );  
   
     const selected = chooseMostFairEmployee(candidates, countReadinessAssignments);  
   
     if (!selected) {  
-      alert(`Keine geeignete Person für die Bereitschaft im Bereich ${area} verfügbar.`);  
+      alert(`Keine geeignete Person aus ${earlyShiftTeam} für die Bereitschaft im Bereich ${area} verfügbar.`);  
       return;  
     }  
   
@@ -1473,6 +1514,14 @@
   
     if (employeeId) {  
       const saturday = parseDate(saturdayIso);  
+      const earlyShiftTeam = getEarlyShiftTeamForWeek(saturday);  
+      const emp = getEmployees().find(e => e.id === employeeId);  
+  
+      if (emp.team !== earlyShiftTeam) {  
+        alert(`Die Bereitschaft darf nur an Mitarbeiter aus dem aktuellen Frühschicht-Team (${earlyShiftTeam}) vergeben werden.`);  
+        return;  
+      }  
+  
       if (isBlockedForReadiness(employeeId, saturday)) {  
         alert("Vor, während oder nach Urlaub sowie vor einer Nachtwoche darf keine Bereitschaft geplant werden.");  
         return;  
